@@ -1,0 +1,538 @@
+---
+output: rmarkdown::github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(collapse=TRUE, comment="##", fig.retina=2, fig.path = "README_figs/README-")
+```
+
+# Electricity Load Prediction in Texas
+
+## Introduction
+
+How do electric companies know how much power they have to generate? They constantly keep track of how much energy is being consumed and many times it is very predictable as we will demonstrate in this analysis. The main goal of this analysis is to see if we can predict the next 24 hours of electricity consumption using past historical data. 
+
+Why is it important to predict hourly demand for electricity at least a day in advance? You need to know much generators needs to be on to meet the expected demand and turning on a generator requires time (to ramp up/down). If you underestimate the load demand then there would be places without power and will have far reaching consequences. If you overestimate by a large margin then energy produced would be wasted and you would 'lose' money (i.e more supply than demand). 
+
+
+## Libraries/packages we will be using
+```{r libraries, message=FALSE, warning=FALSE}
+new_cran_packages <- c("ggplot2", "caret","stringr", "cowplot", "grid", "gridExtra")
+existing_packages <- installed.packages()[,"Package"]
+missing_packages <- new_cran_packages[!(new_cran_packages %in% existing_packages)]
+if(length(missing_packages)){
+    install.packages(missing_packages)
+}
+library(ggplot2)
+library(stringr)
+library(caret)
+library(cowplot)
+library(grid)
+library(gridExtra)
+```
+
+
+## Load the ERCOT 2018 data
+```{r dataset, echo=FALSE}
+dfDemand = read.csv("ERCOT_2018_Hourly_Wind_Output.csv")
+demands = dfDemand$ERCOT.Load..MW
+numberOfDays = length(demands)/24
+```
+
+
+Let's see how does load vary over the year in Texas.
+```{r electricity graph, echo=FALSE}
+days = vector(length = numberOfDays * 24)
+for (hour in seq_len(numberOfDays * 24)) {
+  days[hour] = hour / 24 
+}
+ggplot(dfDemand, aes(x = days, y = demands)) + geom_line(color = "dodgerblue") + 
+  labs(title = "Texas Electricity Demands in 2018", x = "Days in 2018", y = "Net Demand of Texas (in MW)") +
+  theme_minimal()
+```
+
+For fun, let's look at the production of wind energy of the year.
+
+```{r wind output graph, echo=FALSE}
+dfDemand$Windless_Load = dfDemand$ERCOT.Load..MW - dfDemand$Total.Wind.Output..MW
+windDemand = dfDemand$Windless_Load
+windOutput = dfDemand$Total.Wind.Output..MW
+ggplot(dfDemand, aes(x = days, y = windOutput)) + geom_line(color = "orange") + 
+  labs(title = "Texas Wind Power Output in 2018", x = "Days in 2018", y = "MegaWatts") + theme_minimal()
+```
+
+Wind Power looks very sporadic while electricity demands seems to have a trend.
+
+```{r March HeatMap, echo=FALSE}
+monthOfMar = dfDemand[grep("Mar", dfDemand$Date), ]
+monthOfMar$Day = str_split_fixed(monthOfMar$ï..time.date.stamp, " ", 2)[,1]
+monthOfMar$Hour = str_split_fixed(monthOfMar$ï..time.date.stamp, " ", 2)[,2]
+monthOfMar$Day = as.Date(monthOfMar$Day, "%m/%d/%Y")
+monthOfMar$Hour = as.numeric(format(strptime(monthOfMar$Hour,"%H:%M:%S"),'%H'))
+#monthOfJan = monthOfJan %>% 
+ # mutate(weekday = weekdays(Day)) %>%
+  #mutate(weekday = factor(weekday, levels = c("Sunday", "Monday", "Tuesday", "Wednesday",
+   #                                           "Thursday", "Friday", "Saturday")))
+theme_heatmap = theme_light() +
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(face = "bold", size = 11, hjust = 0.5),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 10),
+        axis.text.x = element_text(size = 10, angle = 90, hjust = 1),
+        axis.text.y = element_text(size = 8))
+ggMar = ggplot(monthOfMar, mapping = aes(x = Date, y = Hour, fill = ERCOT.Load..MW)) +
+  geom_tile(colour = "white") + 
+  scale_fill_gradient(low = "#F9F871", high= "#FF9671") +
+  scale_y_reverse(breaks=c(23:0), labels=c(23:0), expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0), position = "top") +
+  labs(title = "Electricity Demand Profile in March 2018", y = "Hour of Day", fill = "Load (in MW)") + 
+  theme_heatmap 
+print(ggMar)
+```
+
+The white square in Mar 11 @ 2:00 indicates a missing data point. March is typically spring time so loads are not considered to be high and colors show a trend: low load during the mornings and weekends, high in the afternoon and evenings in the weekdays.
+
+```{r July HeatMap, echo=FALSE}
+monthOfJuly <- dfDemand[grep("Jul", dfDemand$Date), ]
+monthOfJuly$Day = str_split_fixed(monthOfJuly$ï..time.date.stamp, " ", 2)[,1]
+monthOfJuly$Hour = str_split_fixed(monthOfJuly$ï..time.date.stamp, " ", 2)[,2]
+monthOfJuly$Day = as.Date(monthOfJuly$Day, "%m/%d/%Y")
+monthOfJuly$Hour = as.numeric(format(strptime(monthOfJuly$Hour,"%H:%M:%S"),'%H'))
+ggJuly = ggplot(monthOfJuly, mapping = aes(x = Date, y = Hour, fill = ERCOT.Load..MW)) +
+  geom_tile(colour = "white") + 
+  scale_fill_gradient(low = "#FFC75F", high= "#D65DB1") +
+  scale_y_reverse(breaks=c(23:0), labels=c(23:0), expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0), position = "top") +
+  labs(title = "Electricity Demand Profile in July 2018", y = "Hour of Day", fill = "Load (in MW)") +
+  theme_heatmap 
+print(ggJuly)
+```
+
+The summer season in Texas can get very hot so many people would be using there air conditioning systems which leads to increased demand for electricity. We see a similar trend as in March: low in the mornings, high in the afternoon and evenings. Now we don't we the difference in weekday vs weekend, now there seems to be no difference depending on the day of the week.
+
+
+## Demand Prediction Strategy and Data Aggregation
+
+Based on our observations from the graphs and heatmap, We don't want to use a linear regression to fit a line through the data, so we will predict each hour instead. Therfore to predict effectively, We will use past week, past 2 days, past 1 day to predict the electiricty demand of tomorrow. i.e days to train on $d - 7$, $d - 2$, $d - 1$, to predict load on day $d$.
+
+
+```{r organize data}
+daysToTrainOn = c(-7,-2,-1)
+rangeOfDays = seq(-min(daysToTrainOn), numberOfDays - 1, by = 1)
+Y = NULL
+for (day in rangeOfDays) {
+  Y = rbind(Y, dfDemand$ERCOT.Load..MW[(day * 24): ((day + 1) * 24 - 1)])
+}
+X = NULL
+for (day in rangeOfDays) {
+  X_temp = cbind(t(dfDemand$ERCOT.Load..MW[(((day - 7)*24 +1)):((day - 7 + 1)*24)]),
+            t(dfDemand$ERCOT.Load..MW[(((day - 2)*24) +1):((day - 2 + 1)*24)]),
+            t(dfDemand$ERCOT.Load..MW[(((day - 1)*24) +1):((day - 1 + 1)*24)]))
+  X = rbind(X, X_temp)
+}
+dim(X)
+dim(Y)
+X = data.frame(X)
+Y = data.frame(Y)
+```
+
+Rows is dates and our columns will be the hours in a day. Each day has 24 hours and since we are using days as our features there will be 72 columns for our input X.
+
+```{r, echo=FALSE}
+#daysToTrainOn = c(-7,-2,-1)
+#rangeOfDays = seq(-min(daysToTrainOn), numberOfDays - 1, by = 1)
+#Y = NULL
+#for (day in rangeOfDays) {
+ # Y = rbind(Y, dfDemand$Windless_Load[(day * 24): ((day + 1) * 24 - 1)])
+#}
+#X = NULL
+#for (day in rangeOfDays) {
+ # X_temp = cbind(t(dfDemand$Windless_Load[(((day - 7)*24 +1)):((day - 7 + 1)*24)]),
+  #          t(dfDemand$Windless_Load[(((day - 2)*24) +1):((day - 2 + 1)*24)]),
+   #         t(dfDemand$Windless_Load[(((day - 1)*24) +1):((day - 1 + 1)*24)]))
+  #X = rbind(X, X_temp)
+#}
+#dim(X)
+#dim(Y)
+```
+
+After Organzing the data we will start making our training and testing sets.
+
+```{r, echo=FALSE}
+set.seed(62) #sum of our netids for reproducibility 
+test_inds = createDataPartition(y = 1:nrow(Y), p = 0.2, list = F)
+X_test = X[test_inds, ]; Y_test = Y[test_inds,]
+X_train = X[-test_inds, ]; Y_train = Y[-test_inds,]
+colnames(Y_train) = c("day0.00", "day0.01",  "day0.02", "day0.03", "day0.04", "day0.05", "day0.06", "day0.07"
+                , "day0.08", "day0.09", "day0.10", "day0.11", "day0.12", "day0.13", "day0.14", "day0.15",
+                 "day0.16", "day0.17", "day0.18", "day0.19", "day0.20", "day0.21", "day0.22", "day0.23")
+colnames(Y_test) = c("day0.00", "day0.01",  "day0.02", "day0.03", "day0.04", "day0.05", "day0.06", "day0.07"
+                , "day0.08", "day0.09", "day0.10", "day0.11", "day0.12", "day0.13", "day0.14", "day0.15",
+                 "day0.16", "day0.17", "day0.18", "day0.19", "day0.20", "day0.21", "day0.22", "day0.23")
+colnames(X_train) = c("day7.00", "day7.01",  "day7.02", "day7.03", "day7.04", "day7.05", "day7.06", "day7.07"
+                , "day7.08", "day7.09", "day7.10", "day7.11", "day7.12", "day7.13", "day7.14", "day7.15",
+                 "day7.16", "day7.17", "day7.18", "day7.19", "day7.20", "day7.21", "day7.22", "day7.23",
+                
+                "day2.00", "day2.01",  "day2.02", "day2.03", "day2.04", "day2.05", "day2.06", "day2.07"
+                , "day2.08", "day2.09", "day2.10", "day2.11", "day2.12", "day2.13", "day2.14", "day2.15",
+                 "day2.16", "day2.17", "day2.18", "day2.19", "day2.20", "day2.21", "day2.22", "day2.23",
+                
+                "day1.00", "day1.01",  "day1.02", "day1.03", "day1.04", "day1.05", "day1.06", "day1.07"
+                , "day1.08", "day1.09", "day1.10", "day1.11", "day1.12", "day1.13", "day1.14", "day1.15",
+                 "day1.16", "day1.17", "day1.18", "day1.19", "day1.20", "day1.21", "day1.22", "day1.23")
+colnames(X_test) = c("day7.00", "day7.01",  "day7.02", "day7.03", "day7.04", "day7.05", "day7.06", "day7.07"
+                , "day7.08", "day7.09", "day7.10", "day7.11", "day7.12", "day7.13", "day7.14", "day7.15",
+                 "day7.16", "day7.17", "day7.18", "day7.19", "day7.20", "day7.21", "day7.22", "day7.23",
+                
+                "day2.00", "day2.01",  "day2.02", "day2.03", "day2.04", "day2.05", "day2.06", "day2.07"
+                , "day2.08", "day2.09", "day2.10", "day2.11", "day2.12", "day2.13", "day2.14", "day2.15",
+                 "day2.16", "day2.17", "day2.18", "day2.19", "day2.20", "day2.21", "day2.22", "day2.23",
+                
+                "day1.00", "day1.01",  "day1.02", "day1.03", "day1.04", "day1.05", "day1.06", "day1.07"
+                , "day1.08", "day1.09", "day1.10", "day1.11", "day1.12", "day1.13", "day1.14", "day1.15",
+                 "day1.16", "day1.17", "day1.18", "day1.19", "day1.20", "day1.21", "day1.22", "day1.23")
+```
+Check dimensions of our X and Y sets to see if they are consistent.
+
+```{r}
+dim(X_train)
+dim(X_test)
+dim(Y_train)
+dim(Y_test)
+```
+
+We will train on 286 days and test on 72 days.
+
+## Prediction Using Multiple Linear Regression 
+
+Predict Load of tommorrow at hour i based on last 7 days at time i, last 2 days at time i and yesterday at time i where i = {1,2,... 23}
+
+Our regression equation will be: 
+
+Demand_t = intercept + (7days ago)_t + (2days ago)_t + (1day ago)_t
+In total there will be 24 linear models; one for each hour of the day.
+```{r, echo=FALSE}
+#predict the load at each hour using linear regression
+#retrieve training data at hour i
+data00 = data.frame(Y_train$day0.00,X_train$day7.00,X_train$day2.00,X_train$day1.00)
+data01 = data.frame(Y_train$day0.01,X_train$day7.01,X_train$day2.01,X_train$day1.01)
+data02 = data.frame(Y_train$day0.02,X_train$day7.02,X_train$day2.02,X_train$day1.02)
+data03 = data.frame(Y_train$day0.03,X_train$day7.03,X_train$day2.03,X_train$day1.03)
+data04 = data.frame(Y_train$day0.04,X_train$day7.04,X_train$day2.04,X_train$day1.04)
+data05 = data.frame(Y_train$day0.05,X_train$day7.05,X_train$day2.05,X_train$day1.05)
+data06 = data.frame(Y_train$day0.06,X_train$day7.06,X_train$day2.06,X_train$day1.06)
+data07 = data.frame(Y_train$day0.07,X_train$day7.07,X_train$day2.07,X_train$day1.07)
+data08 = data.frame(Y_train$day0.08,X_train$day7.08,X_train$day2.08,X_train$day1.08)
+data09 = data.frame(Y_train$day0.09,X_train$day7.09,X_train$day2.09,X_train$day1.09)
+data10 = data.frame(Y_train$day0.10,X_train$day7.10,X_train$day2.10,X_train$day1.10)
+data11 = data.frame(Y_train$day0.11,X_train$day7.11,X_train$day2.11,X_train$day1.11)
+data12 = data.frame(Y_train$day0.12,X_train$day7.12,X_train$day2.12,X_train$day1.12)
+data13 = data.frame(Y_train$day0.13,X_train$day7.13,X_train$day2.13,X_train$day1.13)
+data14 = data.frame(Y_train$day0.14,X_train$day7.14,X_train$day2.14,X_train$day1.14)
+data15 = data.frame(Y_train$day0.15,X_train$day7.15,X_train$day2.15,X_train$day1.15)
+data16 = data.frame(Y_train$day0.16,X_train$day7.16,X_train$day2.16,X_train$day1.16)
+data17 = data.frame(Y_train$day0.17,X_train$day7.17,X_train$day2.17,X_train$day1.17)
+data18 = data.frame(Y_train$day0.18,X_train$day7.18,X_train$day2.18,X_train$day1.18)
+data19 = data.frame(Y_train$day0.19,X_train$day7.19,X_train$day2.19,X_train$day1.19)
+data20 = data.frame(Y_train$day0.20,X_train$day7.20,X_train$day2.20,X_train$day1.20)
+data21 = data.frame(Y_train$day0.21,X_train$day7.21,X_train$day2.21,X_train$day1.21)
+data22 = data.frame(Y_train$day0.22,X_train$day7.22,X_train$day2.22,X_train$day1.22)
+data23 = data.frame(Y_train$day0.23,X_train$day7.23,X_train$day2.23,X_train$day1.23)
+#name our variables
+colnames(data00) <- c('day0','pday7','pday2','pday1')
+colnames(data01) <- c('day0','pday7','pday2','pday1')
+colnames(data02) <- c('day0','pday7','pday2','pday1')
+colnames(data03) <- c('day0','pday7','pday2','pday1')
+colnames(data04) <- c('day0','pday7','pday2','pday1')
+colnames(data05) <- c('day0','pday7','pday2','pday1')
+colnames(data06) <- c('day0','pday7','pday2','pday1')
+colnames(data07) <- c('day0','pday7','pday2','pday1')
+colnames(data08) <- c('day0','pday7','pday2','pday1')
+colnames(data09) <- c('day0','pday7','pday2','pday1')
+colnames(data10) <- c('day0','pday7','pday2','pday1')
+colnames(data11) <- c('day0','pday7','pday2','pday1')
+colnames(data12) <- c('day0','pday7','pday2','pday1')
+colnames(data13) <- c('day0','pday7','pday2','pday1')
+colnames(data14) <- c('day0','pday7','pday2','pday1')
+colnames(data15) <- c('day0','pday7','pday2','pday1')
+colnames(data16) <- c('day0','pday7','pday2','pday1')
+colnames(data17) <- c('day0','pday7','pday2','pday1')
+colnames(data18) <- c('day0','pday7','pday2','pday1')
+colnames(data19) <- c('day0','pday7','pday2','pday1')
+colnames(data20) <- c('day0','pday7','pday2','pday1')
+colnames(data21) <- c('day0','pday7','pday2','pday1')
+colnames(data22) <- c('day0','pday7','pday2','pday1')
+colnames(data23) <- c('day0','pday7','pday2','pday1')
+#linear model to predict load at hour i
+mod0 = lm(day0 ~., data = data00)
+mod1 = lm(day0 ~., data = data01)
+mod2 = lm(day0 ~., data = data02)
+mod3 = lm(day0 ~., data = data03)
+mod4 = lm(day0 ~., data = data04)
+mod5 = lm(day0 ~., data = data05)
+mod6 = lm(day0 ~., data = data06)
+mod7 = lm(day0 ~., data = data07)
+mod8 = lm(day0 ~., data = data08)
+mod9 = lm(day0 ~., data = data09)
+mod10 = lm(day0 ~., data = data10)
+mod11 = lm(day0 ~., data = data11)
+mod12 = lm(day0 ~., data = data12)
+mod13 = lm(day0 ~., data = data13)
+mod14 = lm(day0 ~., data = data14)
+mod15 = lm(day0 ~., data = data15)
+mod16 = lm(day0 ~., data = data16)
+mod17 = lm(day0 ~., data = data17)
+mod18 = lm(day0 ~., data = data18)
+mod19 = lm(day0 ~., data = data19)
+mod20 = lm(day0 ~., data = data20)
+mod21 = lm(day0 ~., data = data21)
+mod22 = lm(day0 ~., data = data22)
+mod23 = lm(day0 ~., data = data23)
+#retrieve testing data at hour i
+newdat0 = data.frame(pday7 = X_test$day7.00, pday2=X_test$day2.00, pday1=X_test$day1.00)
+newdat1 = data.frame(pday7 = X_test$day7.01, pday2=X_test$day2.01, pday1=X_test$day1.01)
+newdat2 = data.frame(pday7 = X_test$day7.02, pday2=X_test$day2.02, pday1=X_test$day1.02)
+newdat3 = data.frame(pday7 = X_test$day7.03, pday2=X_test$day2.03, pday1=X_test$day1.03)
+newdat4 = data.frame(pday7 = X_test$day7.04, pday2=X_test$day2.04, pday1=X_test$day1.04)
+newdat5 = data.frame(pday7 = X_test$day7.05, pday2=X_test$day2.05, pday1=X_test$day1.05)
+newdat6 = data.frame(pday7 = X_test$day7.06, pday2=X_test$day2.06, pday1=X_test$day1.06)
+newdat7 = data.frame(pday7 = X_test$day7.07, pday2=X_test$day2.07, pday1=X_test$day1.07)
+newdat8 = data.frame(pday7 = X_test$day7.08, pday2=X_test$day2.08, pday1=X_test$day1.08)
+newdat9 = data.frame(pday7 = X_test$day7.09, pday2=X_test$day2.09, pday1=X_test$day1.09)
+newdat10 = data.frame(pday7 = X_test$day7.10, pday2=X_test$day2.10, pday1=X_test$day1.10)
+newdat11 = data.frame(pday7 = X_test$day7.11, pday2=X_test$day2.11, pday1=X_test$day1.11)
+newdat12 = data.frame(pday7 = X_test$day7.12, pday2=X_test$day2.12, pday1=X_test$day1.12)
+newdat13 = data.frame(pday7 = X_test$day7.13, pday2=X_test$day2.13, pday1=X_test$day1.13)
+newdat14 = data.frame(pday7 = X_test$day7.14, pday2=X_test$day2.14, pday1=X_test$day1.14)
+newdat15 = data.frame(pday7 = X_test$day7.15, pday2=X_test$day2.15, pday1=X_test$day1.15)
+newdat16 = data.frame(pday7 = X_test$day7.16, pday2=X_test$day2.16, pday1=X_test$day1.16)
+newdat17 = data.frame(pday7 = X_test$day7.17, pday2=X_test$day2.17, pday1=X_test$day1.17)
+newdat18 = data.frame(pday7 = X_test$day7.18, pday2=X_test$day2.18, pday1=X_test$day1.18)
+newdat19 = data.frame(pday7 = X_test$day7.19, pday2=X_test$day2.19, pday1=X_test$day1.19)
+newdat20 = data.frame(pday7 = X_test$day7.20, pday2=X_test$day2.20, pday1=X_test$day1.20)
+newdat21 = data.frame(pday7 = X_test$day7.21, pday2=X_test$day2.21, pday1=X_test$day1.21)
+newdat22 = data.frame(pday7 = X_test$day7.22, pday2=X_test$day2.22, pday1=X_test$day1.22)
+newdat23 = data.frame(pday7 = X_test$day7.23, pday2=X_test$day2.23, pday1=X_test$day1.23)
+#use our model to predict the expect load at hour i
+# 72 numbers should be returned; 1 for each day
+```
+```{r, echo=FALSE}
+#method draft for parsing the data
+#temp = NULL
+#for (i in 1:24) {
+ # temp = rbind(temp, c(i-1, predict(eval(as.name(paste0('mod',i-1))), newdata = eval(as.name(paste0('newdat',i-1))))[1]))
+#}
+#temp
+```
+After setting up our models, we set up the our models to see how they perform with the testing dataset.
+```{r}
+data <- list(dat0 = list(model = mod0, test = newdat0),
+             dat1 = list(model = mod1, test = newdat1),
+             dat2 = list(model = mod2, test = newdat2),
+             dat3 = list(model = mod3, test = newdat3),
+             dat4 = list(model = mod4, test = newdat4),
+             dat5 = list(model = mod5, test = newdat5),
+             dat6 = list(model = mod6, test = newdat6),
+             dat7 = list(model = mod7, test = newdat7),
+             dat8 = list(model = mod8, test = newdat8),
+             dat9 = list(model = mod9, test = newdat9),
+             dat10 = list(model = mod10, test = newdat10),
+             dat11 = list(model = mod11, test = newdat11),
+             dat12 = list(model = mod12, test = newdat12),
+             dat13 = list(model = mod13, test = newdat13),
+             dat14 = list(model = mod14, test = newdat14),
+             dat15 = list(model = mod15, test = newdat15),
+             dat16 = list(model = mod16, test = newdat16),
+             dat17 = list(model = mod17, test = newdat17),
+             dat18 = list(model = mod18, test = newdat18),
+             dat19 = list(model = mod19, test = newdat19),
+             dat20 = list(model = mod20, test = newdat20),
+             dat21 = list(model = mod21, test = newdat21),
+             dat22 = list(model = mod22, test = newdat22),
+             dat23 = list(model = mod23, test = newdat23))
+```
+## Results
+```{r 16plots, echo=FALSE}
+resultday1 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[1])
+res1 = data.frame(time = 0:23, Predicted = resultday1, Measured = as.numeric(as.vector(Y_test[1,])))
+gph1 <- ggplot(res1, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 1") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+resultday2 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[2])
+res2 = data.frame(time = 0:23, Predicted = resultday2, Measured = as.numeric(as.vector(Y_test[2,])))
+gph2 <- ggplot(res2, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 2") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday3 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[3])
+res3 = data.frame(time = 0:23, Predicted = resultday3, Measured = as.numeric(as.vector(Y_test[3,])))
+gph3 <- ggplot(res3, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 3") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday4 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[4])
+res4 = data.frame(time = 0:23, Predicted = resultday4, Measured = as.numeric(as.vector(Y_test[4,])))
+gph4 <- ggplot(res4, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 4") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday5 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[5])
+res5 = data.frame(time = 0:23, Predicted = resultday5, Measured = as.numeric(as.vector(Y_test[5,])))
+gph5 <- ggplot(res5, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 5") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday6 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[6])
+res6 = data.frame(time = 0:23, Predicted = resultday6, Measured = as.numeric(as.vector(Y_test[6,])))
+gph6 <- ggplot(res6, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 6") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday7 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[7])
+res7 = data.frame(time = 0:23, Predicted = resultday7, Measured = as.numeric(as.vector(Y_test[7,])))
+gph7 <- ggplot(res7, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 7") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday8 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[8])
+res8 = data.frame(time = 0:23, Predicted = resultday8, Measured = as.numeric(as.vector(Y_test[8,])))
+gph8 <- ggplot(res8, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 8") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday9 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[9])
+res9 = data.frame(time = 0:23, Predicted = resultday9, Measured = as.numeric(as.vector(Y_test[9,])))
+gph9 <- ggplot(res9, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 9") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday10 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[10])
+res10 = data.frame(time = 0:23, Predicted = resultday10, Measured = as.numeric(as.vector(Y_test[10,])))
+gph10 <- ggplot(res10, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 10") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday11 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[11])
+res11 = data.frame(time = 0:23, Predicted = resultday11, Measured = as.numeric(as.vector(Y_test[11,])))
+gph11 <- ggplot(res11, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 11") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday12 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[12])
+res12 = data.frame(time = 0:23, Predicted = resultday12, Measured = as.numeric(as.vector(Y_test[12,])))
+gph12 <- ggplot(res12, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 12") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday13 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[13])
+res13 = data.frame(time = 0:23, Predicted = resultday13, Measured = as.numeric(as.vector(Y_test[13,])))
+gph13 <- ggplot(res13, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 13") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday14 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[14])
+res14 = data.frame(time = 0:23, Predicted = resultday14, Measured = as.numeric(as.vector(Y_test[14,])))
+gph14 <- ggplot(res14, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 14") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday15 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[15])
+res15 = data.frame(time = 0:23, Predicted = resultday15, Measured = as.numeric(as.vector(Y_test[15,])))
+gph15 <- ggplot(res15, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 15") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+resultday16 = sapply(data, function(dat) predict(dat$model, newdata = dat$test)[16])
+res16 = data.frame(time = 0:23, Predicted = resultday16, Measured = as.numeric(as.vector(Y_test[16,])))
+gph16 <- ggplot(res16, aes(time)) + 
+  geom_line(aes(y = Measured, color = "Measured")) + 
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Day 16") +
+  theme_classic() + 
+  theme(legend.title=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), legend.position="none")
+```
+Sanity check to see if the number of predictions we have matches the number of measured values in the test set.
+```{r}
+predictions = sapply(data, function(dat) predict(dat$model, newdata = dat$test))
+dim(predictions)
+dim(Y_test)
+```
+Let's visualize our results
+Here we choose the first 16 days to see how good our predictions were.
+```{r, echo=FALSE}
+legend = get_legend(gph1 + theme(legend.position="bottom"))
+gph1 = gph1 + theme(legend.position = "none")
+bigPlot = plot_grid(gph1, gph2, gph3, gph4, gph5, gph6, gph7, gph8, gph9, gph10, gph11, gph12, gph13,
+                    gph14, gph15, gph16,
+                    align = 'vh', hjust = -1, nrow = 4)
+p <- plot_grid(bigPlot, legend, ncol = 1, rel_heights = c(3,.2))
+y.grob <- textGrob("Demand in Texas (in MW)", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15), rot=90)
+x.grob <- textGrob("Time of day (in hours)", 
+                   gp=gpar(fontface="bold", col="black", fontsize=15))
+grid.arrange(arrangeGrob(p, left = y.grob, bottom = x.grob))
+```
+Overall, it seems to be predicting reasonbly well for a linear model. Though there are some days like day 2 where our model performed poorly. Generally, it is okay to overestimate alittle but it is not good to underestimate. 
+
+### Testing Accuracy using Min-Max (closer to 1, the better)
+
+```{r, echo=FALSE}
+TrueOutput <- as.vector(t(Y_test))
+PredOutput <- c(predictions)
+act_pred <- data.frame(cbind(actuals = TrueOutput, predicteds = PredOutput))
+```
+```{r}
+min_max <- mean(apply(act_pred, 1, min) / apply(act_pred, 1, max))
+print(min_max)
+```
+81% testing accuracy not bad!
+
+### Other Assessment Metrics
+
+```{r}
+source('Functions.R')
+error = act_pred$actuals - act_pred$predicteds
+mae(error) # Mean Absolute Error
+rmse(error) # Root Mean Squared Error
+```
+Both the MAE and RMSE is relatively low because the mean absolute error and the maximum load demand is very different and far from each other.
+
+## Conclusion/Future Work
+
+We have shown a simple way to predict electricity demand while getting very reasonable accuracy. How ERCOT actually predicts energy consumption is definitely a lot more sophisticated than our simple model but the main principles remains the same. We use past data to predict the future, it is impossible to predict the future with impeccable accuracy but we can do better than just guessing.
+As for potential room for improvement and future work, we could explore more advanced prediction methods such as using a neural network, or times series model. The code written could be optimized better and done with fewer lines. We might also want to try matching the dataset with a weather dataset and use temperature as an additional feature in our models.
