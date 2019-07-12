@@ -22,12 +22,6 @@ you would ‘lose’ money (i.e more supply than demand).
 ## Libraries/packages we will be using
 
 ``` r
-new_cran_packages <- c("ggplot2", "caret","stringr", "cowplot", "grid", "gridExtra")
-existing_packages <- installed.packages()[,"Package"]
-missing_packages <- new_cran_packages[!(new_cran_packages %in% existing_packages)]
-if(length(missing_packages)){
-    install.packages(missing_packages)
-}
 library(ggplot2)
 library(stringr)
 library(caret)
